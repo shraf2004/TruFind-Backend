@@ -26,9 +26,9 @@ const pool = new Pool({
 
 // ✅ Cloudinary Config
 cloudinary.config({
-    cloud_name: "dzzjsl8si",
-    api_key: "537964696873869",
-    api_secret: "1z5YO1BSvUUDcjUYEZJpx87-PMg"
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
 // ✅ Multer Setup
