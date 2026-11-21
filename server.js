@@ -1,4 +1,4 @@
-// ✅✅✅ TruFind server.js — Backend
+//  TruFind server.js — Backend
 require("dotenv").config();
 const express = require("express");
 const nodemailer = require("nodemailer");
@@ -9,37 +9,42 @@ const { Pool } = require("pg");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 
-// ✅ Setup Express
+//   Setup Express
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// ✅ Setup PostgreSQL
+//   Setup PostgreSQL
 const pool = new Pool({
     host: process.env.PGHOST,
     port: process.env.PGPORT,
     database: process.env.PGDATABASE,
     user: process.env.PGUSER,
     password: process.env.PGPASSWORD,
-    ssl: { rejectUnauthorized: false }
+    ssl: {
+    ca: require("fs").readFileSync(
+      require("path").join(__dirname, "global-bundle.pem"), "utf8"
+    ),
+    rejectUnauthorized: true
+  }
 });
 
-// ✅ Cloudinary Config
+//   Cloudinary Config
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// ✅ Multer Setup
+//   Multer Setup
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ✅ Generate 6-digit Code
+//   Generate 6-digit Code
 function genCode() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// ✅ Send Email Verification Code
+//   Send Email Verification Code
 app.post("/send-code", (req, res) => {
     const { email, name, password } = req.body;
     if (!email.endsWith("@truman.edu")) {
@@ -96,7 +101,7 @@ app.post("/send-code", (req, res) => {
 });
 
 
-// ✅ Verify Code
+//   Verify Code
 app.post("/verify-code", (req, res) => {
     const { email, code } = req.body;
     const sql = "SELECT * FROM users WHERE email=$1 AND verification_code=$2";
@@ -113,7 +118,7 @@ app.post("/verify-code", (req, res) => {
     });
 });
 
-// ✅ Create Post
+//   Create Post
 app.post("/posts", upload.single("image"), async (req, res) => {
     try {
         const userId = req.body.user_id;
@@ -145,7 +150,7 @@ app.post("/posts", upload.single("image"), async (req, res) => {
     }
 });
 
-// ✅ Get Posts by user_id
+//   Get Posts by user_id
 app.get("/posts/:user_id", (req, res) => {
     const userId = req.params.user_id;
     const sql = "SELECT * FROM posts WHERE user_id = $1 ORDER BY created_at DESC";
@@ -155,7 +160,7 @@ app.get("/posts/:user_id", (req, res) => {
     });
 });
 
-// ✅ Get All Posts with user name
+//   Get All Posts with user name
 app.get("/all-posts", (req, res) => {
     const sql = `SELECT posts.*, users.name FROM posts JOIN users ON posts.user_id = users.id ORDER BY created_at DESC`;
     pool.query(sql, (err, result) => {
@@ -164,7 +169,7 @@ app.get("/all-posts", (req, res) => {
     });
 });
 
-// ✅ Delete Post
+//   Delete Post
 app.delete("/delete-posts/:id", (req, res) => {
     const postId = req.params.id;
     const userId = req.query.userId;
@@ -176,14 +181,21 @@ app.delete("/delete-posts/:id", (req, res) => {
     });
 });
 
-// ✅ Start Server
+//   Start Server
+app.get("/health", (req, res) => {
+    res.status(200).json({
+      status: "ok",
+      service: "trufind-backend"
+    });
+  });
+  
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
 });
 
 
-// ✅ Login Route
+//   Login Route
 app.post("/login", (req, res) => {
     const { email, password } = req.body;
 
