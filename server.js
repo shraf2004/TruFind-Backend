@@ -3,8 +3,18 @@ require("./auth");
 
 const { Pool } = require("pg");
 const nodemailer = require("nodemailer");
-const cloudinary = require("cloudinary").v2;
+const { S3Client } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const createApp = require("./app");
+const { createImageStorage } = require("./image-storage");
+
+const region = process.env.AWS_REGION;
+if (!region) throw new Error("AWS_REGION is required");
+const images = createImageStorage({
+    bucket: process.env.S3_BUCKET,
+    client: new S3Client({ region }),
+    signUrl: getSignedUrl
+});
 
 //   Setup PostgreSQL
 const pool = new Pool({
@@ -21,14 +31,7 @@ const pool = new Pool({
   }
 });
 
-//   Cloudinary Config
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
-const app = createApp({ pool, nodemailer, cloudinary });
+const app = createApp({ pool, nodemailer, images });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
