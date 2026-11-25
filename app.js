@@ -3,17 +3,38 @@ const cors = require("cors");
 const bodyParser = require("body-parser");
 const bcrypt = require("bcrypt");
 const multer = require("multer");
+const { isSupportedImage } = require("./image-storage");
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
-
-function createApp({ pool, nodemailer, cloudinary }) {
+function createApp({ pool, nodemailer, images }) {
     const { issueToken, requireUser } = require("./auth");
     //   Setup Express
     const app = express();
     app.use(cors());
     app.use(bodyParser.json());
 
-    //   Multer Setup
-    const upload = multer({ storage: multer.memoryStorage() });
+    const upload = multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: MAX_IMAGE_SIZE + 1 }
+    }).single("image");
+
+    function parseImage(req, res, next) {
+        upload(req, res, error => {
+            if (error?.code === "LIMIT_FILE_SIZE" || req.file?.size > MAX_IMAGE_SIZE) {
+                return res.status(413).json({ success: false, message: "Images must be 5 MiB or smaller." });
+            }
+            if (error) return res.status(400).json({ success: false, message: "Invalid image upload." });
+            return next();
+        });
+    }
+
+    async function removeImage(reference, reason) {
+        try {
+            await images.remove(reference);
+        } catch {
+            console.error("S3 image cleanup failed", { reason, reference });
+        }
+    }
 
     //   Generate 6-digit Code
     function genCode() {
@@ -95,66 +116,76 @@ function createApp({ pool, nodemailer, cloudinary }) {
     });
 
     //   Create Post
-    app.post("/posts", requireUser, upload.single("image"), async (req, res) => {
+    app.post("/posts", requireUser, parseImage, async (req, res) => {
+        let imageUrl = "No image";
         try {
             const userId = req.userId;
             const title = req.body.title;
             const description = req.body.description;
             const file = req.file;
 
-            let imageUrl = "No image";
-
             if (file) {
-                const result = await new Promise((resolve, reject) => {
-                    cloudinary.uploader.upload_stream({ resource_type: "image" }, (error, result) => {
-                        if (error) reject("Cloudinary error");
-                        else resolve(result);
-                    }).end(file.buffer);
-                });
-                imageUrl = result.secure_url;
+                if (!await isSupportedImage(file)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Upload a JPEG, PNG, or WebP image with a matching file type."
+                    });
+                }
+                imageUrl = await images.upload(file);
             }
 
             const sql = `INSERT INTO posts (user_id, title, description, image_url, created_at)
                          VALUES ($1, $2, $3, $4, NOW())`;
 
-            pool.query(sql, [userId, title, description, imageUrl], (err) => {
-                if (err) return res.json({ success: false });
-                return res.json({ success: true });
-            });
-        } catch (err) {
-            return res.json({ success: false, message: "Server error" });
+            await pool.query(sql, [userId, title, description, imageUrl]);
+        } catch {
+            if (imageUrl !== "No image") await removeImage(imageUrl, "post insert failed");
+            return res.status(500).json({ success: false, message: "Could not save the post." });
         }
+        return res.json({ success: true });
     });
+
+    async function sendPosts(res, sql, params) {
+        res.set("Cache-Control", "no-store");
+        try {
+            const result = await pool.query(sql, params);
+            const posts = await Promise.all(result.rows.map(async post => ({
+                ...post,
+                image_url: await images.readUrl(post.image_url)
+            })));
+            return res.json({ success: true, posts });
+        } catch {
+            return res.status(500).json({ success: false, message: "Could not load posts." });
+        }
+    }
 
     //   Get Posts by user_id
     app.get("/posts/:user_id", (req, res) => {
         const userId = req.params.user_id;
         const sql = "SELECT * FROM posts WHERE user_id = $1 ORDER BY created_at DESC";
-        pool.query(sql, [userId], (err, result) => {
-            if (err) return res.json({ success: false });
-            res.json({ success: true, posts: result.rows });
-        });
+        return sendPosts(res, sql, [userId]);
     });
 
     //   Get All Posts with user name
     app.get("/all-posts", (req, res) => {
         const sql = `SELECT posts.*, users.name FROM posts JOIN users ON posts.user_id = users.id ORDER BY created_at DESC`;
-        pool.query(sql, (err, result) => {
-            if (err) return res.json({ success: false });
-            return res.json({ success: true, posts: result.rows });
-        });
+        return sendPosts(res, sql, []);
     });
 
     //   Delete Post
-    app.delete("/delete-posts/:id", requireUser, (req, res) => {
+    app.delete("/delete-posts/:id", requireUser, async (req, res) => {
         const postId = req.params.id;
         const userId = req.userId;
-        const sql = "DELETE FROM posts WHERE id = $1 AND user_id = $2";
-        pool.query(sql, [postId, userId], (err, result) => {
-            if (err) return res.json({ success: false });
-            if (result.rowCount > 0) return res.json({ success: true });
-            return res.status(404).json({ success: false });
-        });
+        const sql = "DELETE FROM posts WHERE id = $1 AND user_id = $2 RETURNING image_url";
+        let result;
+        try {
+            result = await pool.query(sql, [postId, userId]);
+        } catch {
+            return res.status(500).json({ success: false });
+        }
+        if (!result.rowCount) return res.status(404).json({ success: false });
+        await removeImage(result.rows[0].image_url, "post deleted");
+        return res.json({ success: true });
     });
 
     //   Start Server
