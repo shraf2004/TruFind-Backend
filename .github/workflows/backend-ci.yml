@@ -1,0 +1,73 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, feat/docker-ci]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: node --test
+      - name: Run isolated tests in Docker
+        run: |
+          docker build --target test --tag trufind-backend:test .
+          docker run --rm --init --network none trufind-backend:test
+      - name: Build and verify the runtime image
+        run: |
+          docker build --tag trufind-backend:runtime .
+          docker run --rm --network none trufind-backend:runtime node -e '
+            const assert = require("node:assert/strict");
+            assert.notEqual(process.getuid(), 0);
+            const bcrypt = require("bcrypt");
+            assert.ok(bcrypt.compareSync("ci", bcrypt.hashSync("ci", 4)));
+          '
+      - name: Smoke-test runtime health offline
+        run: |
+          container=$(docker run --detach --init --network none \
+            -e PORT=3100 \
+            -e AUTH_TOKEN_SECRET=ci-only-fake-secret-not-for-real-use \
+            -e AWS_REGION=us-east-1 -e S3_BUCKET=trufind-ci-placeholder \
+            -e AWS_EC2_METADATA_DISABLED=true \
+            -e PGHOST=127.0.0.1 -e PGPORT=5432 \
+            -e PGDATABASE=ci -e PGUSER=ci -e PGPASSWORD=ci \
+            -e GMAIL_USER=ci@example.invalid -e GMAIL_PASS=ci \
+            trufind-backend:runtime)
+          trap 'docker rm --force "$container" >/dev/null' EXIT
+          for attempt in {1..20}; do
+            if docker exec "$container" node -e '
+              const assert = require("node:assert/strict");
+              (async () => {
+                const response = await fetch("http://127.0.0.1:3100/health", {
+                  signal: AbortSignal.timeout(1000)
+                });
+                assert.equal(response.status, 200);
+                assert.deepEqual(await response.json(), {
+                  status: "ok", service: "trufind-backend"
+                });
+              })().catch(error => { console.error(error); process.exitCode = 1; });
+            '; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container"
+          exit 1
