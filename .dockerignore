@@ -1,0 +1,13 @@
+# Allow only files used by the Dockerfile.
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!app.js
+!auth.js
+!image-storage.js
+!server.js
+!global-bundle.pem
+!test/
+test/**
+!test/posts.test.js

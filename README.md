@@ -40,3 +40,39 @@ the object reference for follow-up.
 Run the isolated API tests with `node --test` after installing
 dependencies with `npm ci`. The tests use fake PostgreSQL, email, and S3
 services.
+
+## Docker and CI
+
+From the backend directory, build and run the isolated API tests with
+container networking limited to loopback.
+
+```sh
+docker build --target test -t trufind-backend:test .
+docker run --rm --init --network none trufind-backend:test
+```
+
+Build the runtime image and bind it to localhost on a free host port such
+as 3100. The example sets the container's `PORT` to its default of 3000.
+Use `--init` so the container handles shutdown signals and reaps child
+processes.
+
+```sh
+docker build -t trufind-backend:runtime .
+docker run --rm --init --env-file .env.local --env PORT=3000 -p 127.0.0.1:3100:3000 trufind-backend:runtime
+curl http://127.0.0.1:3100/health
+```
+
+Keep `.env.local` out of Git and use it to supply local runtime settings,
+including `AUTH_TOKEN_SECRET`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`,
+`PGPASSWORD`, `AWS_REGION`, `S3_BUCKET`, `GMAIL_USER`, and `GMAIL_PASS`.
+Supply secrets and AWS credentials at runtime. Real application use still
+requires network access to private RDS and AWS credentials with access to
+the S3 bucket. The runtime image includes the public RDS CA bundle for TLS
+verification. `/health` reports process availability. It performs no
+checks against PostgreSQL, S3, or email.
+
+GitHub Actions runs the isolated tests on the runner and in Docker, builds
+the runtime image, and checks its non-root user, native bcrypt dependency,
+and `/health` response with fake settings in a network-isolated container.
+CI does not deploy. EC2 container deployment requires a separate review
+of instance role credential access and CloudWatch logging.
